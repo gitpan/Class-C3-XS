@@ -1,0 +1,21 @@
+---
+name: Class-C3-XS
+version: 0.01_01
+author:
+  - 'Brandon L. Black, E<lt>blblack@gmail.comE<gt>'
+abstract: XS speedups for Class::C3
+license: perl
+resources:
+  license: http://dev.perl.org/licenses/
+requires:
+  perl: 5.008
+build_requires:
+  Test::More: 0.47
+provides:
+  Class::C3::XS:
+    file: lib/Class/C3/XS.pm
+    version: 0.01_01
+generated_by: Module::Build version 0.2807
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.2.html
+  version: 1.2
