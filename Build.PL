@@ -17,6 +17,7 @@ my $build = Module::Build->new(
     recursive_test_files => 1,
     add_to_cleanup => [
         'META.yml', '*.bak', '*.gz', 'Makefile.PL',
+        'XS.c', 'XS.o', 'XS.bs',
     ],
 );
 

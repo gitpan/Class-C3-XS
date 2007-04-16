@@ -1,6 +1,6 @@
 ---
 name: Class-C3-XS
-version: 0.01_01
+version: 0.01_02
 author:
   - 'Brandon L. Black, E<lt>blblack@gmail.comE<gt>'
 abstract: XS speedups for Class::C3
@@ -14,7 +14,7 @@ build_requires:
 provides:
   Class::C3::XS:
     file: lib/Class/C3/XS.pm
-    version: 0.01_01
+    version: 0.01_02
 generated_by: Module::Build version 0.2807
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.2.html

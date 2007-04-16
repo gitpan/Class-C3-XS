@@ -1,7 +1,7 @@
 Build.PL
 ChangeLog
 lib/Class/C3/XS.pm
-lib/Class/C3/XS.xs
+XS.xs
 MANIFEST			This list of files
 t/00_load.t
 t/01_MRO.t
