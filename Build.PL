@@ -4,6 +4,7 @@ use strict;
 
 my $build = Module::Build->new(
     module_name => 'Class::C3::XS',
+    xs_files => { 'XS.xs' => 'lib/Class/C3/XS.xs' },
     license => 'perl',
     optional => {},
     requires => {
