@@ -17,8 +17,10 @@ __mro_linear_isa_c3(pTHX_ HV* stash, HV* cache, I32 level)
     AV* isa;
     const char* stashname;
     STRLEN stashname_len;
+    I32 made_mortal_cache = 0;
 
     assert(stash);
+    assert(HvAUX(stash));
 
     stashname = HvNAME(stash);
     stashname_len = strlen(stashname);
@@ -32,6 +34,7 @@ __mro_linear_isa_c3(pTHX_ HV* stash, HV* cache, I32 level)
 
     if(!cache) {
         cache = (HV*)sv_2mortal((SV*)newHV());
+        made_mortal_cache = 1;
     }
     else {
         SV** cache_entry = hv_fetch(cache, stashname, stashname_len, 0);
@@ -41,101 +44,171 @@ __mro_linear_isa_c3(pTHX_ HV* stash, HV* cache, I32 level)
 
     /* not in cache, make a new one */
 
-    retval = newAV();
-    av_push(retval, newSVpvn(stashname, stashname_len)); /* us first */
-
     gvp = (GV**)hv_fetch(stash, "ISA", 3, FALSE);
     isa = (gvp && (gv = *gvp) && gv != (GV*)&PL_sv_undef) ? GvAV(gv) : NULL;
-
     if(isa && AvFILLp(isa) >= 0) {
         SV** seqs_ptr;
         I32 seqs_items;
-        HV* tails = (HV*)sv_2mortal((SV*)newHV());
-        AV* seqs = (AV*)sv_2mortal((SV*)newAV());
+        HV* const tails = (HV*)sv_2mortal((SV*)newHV());
+        AV* const seqs = (AV*)sv_2mortal((SV*)newAV());
+        I32* heads;
+
+        /* This builds @seqs, which is an array of arrays.
+           The members of @seqs are the MROs of
+           the members of @ISA, followed by @ISA itself.
+        */
         I32 items = AvFILLp(isa) + 1;
         SV** isa_ptr = AvARRAY(isa);
         while(items--) {
-            AV* isa_lin;
-            SV* isa_item = *isa_ptr++;
-            HV* isa_item_stash = gv_stashsv(isa_item, 0);
+            SV* const isa_item = *isa_ptr++;
+            HV* const isa_item_stash = gv_stashsv(isa_item, 0);
             if(!isa_item_stash) {
-                isa_lin = newAV();
+                /* if no stash, make a temporary fake MRO
+                   containing just itself */
+                AV* const isa_lin = newAV();
                 av_push(isa_lin, newSVsv(isa_item));
+                av_push(seqs, (SV*)isa_lin);
             }
             else {
-                isa_lin = (AV*)sv_2mortal((SV*)__mro_linear_isa_c3(aTHX_ isa_item_stash, cache, level + 1)); /* recursion */
+                /* recursion */
+                AV* const isa_lin = __mro_linear_isa_c3(aTHX_ isa_item_stash, cache, level + 1);
+                av_push(seqs, (SV*)isa_lin);
             }
-            av_push(seqs, (SV*)av_make(AvFILLp(isa_lin)+1, AvARRAY(isa_lin)));
         }
-        av_push(seqs, (SV*)av_make(AvFILLp(isa)+1, AvARRAY(isa)));
+        av_push(seqs, SvREFCNT_inc((SV*)isa));
 
+        /* This builds "heads", which as an array of integer array
+           indices, one per seq, which point at the virtual "head"
+           of the seq (initially zero) */
+        Newz(0xdead, heads, AvFILLp(seqs)+1, I32);
+
+        /* This builds %tails, which has one key for every class
+           mentioned in the tail of any sequence in @seqs (tail meaning
+           everything after the first class, the "head").  The value
+           is how many times this key appears in the tails of @seqs.
+        */
         seqs_ptr = AvARRAY(seqs);
         seqs_items = AvFILLp(seqs) + 1;
         while(seqs_items--) {
-            AV* seq = (AV*)*seqs_ptr++;
+            AV* const seq = (AV*)*seqs_ptr++;
             I32 seq_items = AvFILLp(seq);
             if(seq_items > 0) {
                 SV** seq_ptr = AvARRAY(seq) + 1;
                 while(seq_items--) {
-                    SV* seqitem = *seq_ptr++;
-                    HE* he = hv_fetch_ent(tails, seqitem, 0, 0);
+                    SV* const seqitem = *seq_ptr++;
+                    HE* const he = hv_fetch_ent(tails, seqitem, 0, 0);
                     if(!he) {
                         hv_store_ent(tails, seqitem, newSViv(1), 0);
                     }
                     else {
-                        SV* val = HeVAL(he);
+                        SV* const val = HeVAL(he);
                         sv_inc(val);
                     }
                 }
             }
         }
 
+        /* Initialize retval to build the return value in */
+        retval = newAV();
+        av_push(retval, newSVpvn(stashname, stashname_len)); /* us first */
+
+        /* This loop won't terminate until we either finish building
+           the MRO, or get an exception. */
         while(1) {
-            SV* seqhead = NULL;
             SV* cand = NULL;
             SV* winner = NULL;
-            SV* val;
-            HE* tail_entry;
-            AV* seq;
-            SV** avptr = AvARRAY(seqs);
-            items = AvFILLp(seqs)+1;
-            while(items--) {
+            int s;
+
+            /* "foreach $seq (@seqs)" */
+            SV** const avptr = AvARRAY(seqs);
+            for(s = 0; s <= AvFILLp(seqs); s++) {
                 SV** svp;
-                seq = (AV*)*avptr++;
-                if(AvFILLp(seq) < 0) continue;
-                svp = av_fetch(seq, 0, 0);
-                seqhead = *svp;
+                AV * const seq = (AV*)(avptr[s]);
+                SV* seqhead;
+                if(!seq) continue; /* skip empty seqs */
+                svp = av_fetch(seq, heads[s], 0);
+                seqhead = *svp; /* seqhead = head of this seq */
                 if(!winner) {
+                    HE* tail_entry;
+                    SV* val;
+                    /* if we haven't found a winner for this round yet,
+                       and this seqhead is not in tails (or the count
+                       for it in tails has dropped to zero), then this
+                       seqhead is our new winner, and is added to the
+                       final MRO immediately */
                     cand = seqhead;
                     if((tail_entry = hv_fetch_ent(tails, cand, 0, 0))
                        && (val = HeVAL(tail_entry))
-                       && (SvIVx(val) > 0))
+                       && (SvIVX(val) > 0))
                            continue;
                     winner = newSVsv(cand);
                     av_push(retval, winner);
+                    /* note however that even when we find a winner,
+                       we continue looping over @seqs to do housekeeping */
                 }
                 if(!sv_cmp(seqhead, winner)) {
-                    sv_2mortal(av_shift(seq));
-                    if(AvFILLp(seq) < 0) continue;
-                    svp = av_fetch(seq, 0, 0);
-                    seqhead = *svp;
-                    tail_entry = hv_fetch_ent(tails, seqhead, 0, 0);
-                    val = HeVAL(tail_entry);
-                    sv_dec(val);
+                    /* Once we have a winner (including the iteration
+                       where we first found him), inc the head ptr
+                       for any seq which had the winner as a head,
+                       NULL out any seq which is now empty,
+                       and adjust tails for consistency */
+
+                    const int new_head = ++heads[s];
+                    if(new_head > AvFILLp(seq)) {
+                        SvREFCNT_dec(avptr[s]);
+                        avptr[s] = NULL;
+                    }
+                    else {
+                        HE* tail_entry;
+                        SV* val;
+                        /* Because we know this new seqhead used to be
+                           a tail, we can assume it is in tails and has
+                           a positive value, which we need to dec */
+                        svp = av_fetch(seq, new_head, 0);
+                        seqhead = *svp;
+                        tail_entry = hv_fetch_ent(tails, seqhead, 0, 0);
+                        val = HeVAL(tail_entry);
+                        sv_dec(val);
+                    }
                 }
             }
-            if(!cand) break;
+
+            /* if we found no candidates, we are done building the MRO.
+               !cand means no seqs have any entries left to check */
+            if(!cand) {
+                Safefree(heads);
+                break;
+            }
+
+            /* If we had candidates, but nobody won, then the @ISA
+               hierarchy is not C3-incompatible */
             if(!winner) {
+                /* we have to do some cleanup before we croak */
+
                 SvREFCNT_dec(retval);
+                Safefree(heads);
+
                 Perl_croak(aTHX_ "Inconsistent hierarchy during C3 merge of class '%s': "
                     "merging failed on parent '%s'", stashname, SvPV_nolen(cand));
             }
         }
     }
+    else { /* @ISA was undefined or empty */
+        /* build a retval containing only ourselves */
+        retval = newAV();
+        av_push(retval, newSVpvn(stashname, stashname_len));
+    }
 
+    /* we don't want anyone modifying the cache entry but us,
+       and we do so by replacing it completely */
     SvREADONLY_on(retval);
-    hv_store(cache, stashname, stashname_len, (SV*)retval, 0);
-    return (AV*)SvREFCNT_inc(retval);
+
+    if(!made_mortal_cache) {
+        SvREFCNT_inc(retval);
+        hv_store(cache, stashname, stashname_len, (SV*)retval, 0);
+    }
+
+    return retval;
 }
 
 STATIC I32
@@ -165,7 +238,6 @@ __nextcan(pTHX_ SV* self, I32 throw_nomethod)
     GV** gvp;
     AV* linear_av;
     SV** linear_svp;
-    SV* linear_sv;
     HV* cstash;
     GV* candidate = NULL;
     CV* cand_cv = NULL;
@@ -274,7 +346,7 @@ __nextcan(pTHX_ SV* self, I32 throw_nomethod)
     items = AvFILLp(linear_av) + 1;
 
     while (items--) {
-        linear_sv = *linear_svp++;
+        SV* const linear_sv = *linear_svp++;
         assert(linear_sv);
         if(sv_eq(linear_sv, stashname))
             break;
@@ -285,7 +357,7 @@ __nextcan(pTHX_ SV* self, I32 throw_nomethod)
         HV* cc3_mro = get_hv("Class::C3::MRO", 0);
 
         while (items--) {
-            linear_sv = *linear_svp++;
+            SV* const linear_sv = *linear_svp++;
             assert(linear_sv);
 
             if(cc3_mro) {
@@ -438,10 +510,9 @@ XS(XS_Class_C3_XS_calc_mdt)
     class_mro = __mro_linear_isa_c3(aTHX_ class_stash, cache, 0);
 
     our_c3mro = newHV();
-    hv_store(our_c3mro, "MRO", 3, (SV*)newRV_inc((SV*)class_mro), 0);
+    hv_store(our_c3mro, "MRO", 3, (SV*)newRV_noinc((SV*)class_mro), 0);
 
     hv = get_hv("Class::C3::MRO", 1);
-    hv_delete_ent(hv, classname, G_DISCARD, 0);
     hv_store_ent(hv, classname, (SV*)newRV_noinc((SV*)our_c3mro), 0);
 
     methods = newHV();
