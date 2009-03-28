@@ -23,15 +23,15 @@
 
 #ifndef SvREFCNT_inc
 #  ifdef PERL_USE_GCC_BRACE_GROUPS
-#    define SvREFCNT_inc(sv)		\
-      ({				\
-          SV * const _sv = (SV*)(sv);	\
-          if (_sv)			\
-               (SvREFCNT(_sv))++;	\
-          _sv;				\
+#    define SvREFCNT_inc(sv) \
+      ({ \
+          SV * const _sv = (SV*)(sv); \
+          if (_sv) \
+               (SvREFCNT(_sv))++; \
+          _sv; \
       })
 #  else
-#    define SvREFCNT_inc(sv)	\
+#    define SvREFCNT_inc(sv) \
           ((PL_Sv=(SV*)(sv)) ? (++(SvREFCNT(PL_Sv)),PL_Sv) : NULL)
 #  endif
 #endif
@@ -231,13 +231,22 @@ __mro_linear_isa_c3(pTHX_ HV* stash, HV* cache, I32 level)
             /* If we had candidates, but nobody won, then the @ISA
                hierarchy is not C3-incompatible */
             if(!winner) {
+                SV *errmsg;
+                I32 i;
                 /* we have to do some cleanup before we croak */
+
+                errmsg = newSVpvf("Inconsistent hierarchy during C3 merge of class '%s':\n\t"
+                                  "current merge results [\n", stashname);
+                for (i = 0; i <= av_len(retval); i++) {
+                    SV **elem = av_fetch(retval, i, 0);
+                    sv_catpvf(errmsg, "\t\t%"SVf",\n", SVfARG(*elem));
+                }
+                sv_catpvf(errmsg, "\t]\n\tmerging failed on '%"SVf"'", SVfARG(cand));
 
                 SvREFCNT_dec(retval);
                 Safefree(heads);
 
-                Perl_croak(aTHX_ "Inconsistent hierarchy during C3 merge of class '%s': "
-                    "merging failed on parent '%s'", stashname, SvPV_nolen(cand));
+                croak("%"SVf, SVfARG(errmsg));
             }
         }
     }
@@ -633,7 +642,7 @@ XS(XS_Class_C3_XS_calc_mdt)
     XSRETURN_EMPTY;
 }
 
-MODULE = Class::C3::XS	PACKAGE = Class::C3::XS
+MODULE = Class::C3::XS  PACKAGE = Class::C3::XS
 
 PROTOTYPES: DISABLED
 
